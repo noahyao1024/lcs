@@ -44,7 +44,13 @@ typedef struct {
     short status;
     short type;
     //int (*protocol_header)(char* buf, const char* header); // 协议
-} Connect;
+} MyConnect;
+
+typedef struct {
+    struct epoll_event* event;
+    pthread_t* thread;
+    int epoll_fd;
+} MyThread;
 
 int create_server(const char* port, int* myerrno, char* errmsg);
 

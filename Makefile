@@ -1,10 +1,13 @@
 CC=gcc
 
 lcs : ConnectManager.o mylog.o lcs.h lcs.c
-	$(CC) ConnectManager.o mylog.o lcs.c -o lcs -g
+	$(CC) -g -lpthread -o lcs ConnectManager.o mylog.o lcs.c
 
 ConnectManager.o : ConnectManager.c ConnectManager.h
-	$(CC) -c ConnectManager.c -o ConnectManager.o
+	$(CC) -g -c -o ConnectManager.o ConnectManager.c
 
 mylog.o : mylog.h mylog.c
-	$(CC) -c mylog.c -o mylog.o
+	$(CC) -g -c -o mylog.o mylog.c
+
+clean :
+	rm -rf *.o lcs

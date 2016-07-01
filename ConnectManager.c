@@ -1,9 +1,9 @@
 #include "ConnectManager.h"
 
-Connect* connect_pool[MAX_CONNECT];
 Logger* connect_warning_logger;
 
-pthread_t thread_pool[MAX_THREAD];
+MyConnect* connect_pool[MAX_CONNECT];
+MyThread* thread_pool[MAX_THREAD];
 
 int do_accept() {
     pid_t pid = fork();
@@ -17,25 +17,82 @@ int do_accept() {
     return 0;
 }
 
-int do_handle_connection() {
-    return 0;
+int do_handle_connection(void* arg) {
+    int epoll_fd = (int)arg;
+    char socket_read_buf[MAX_BUF_SIZE];
+    printf("Listen epoll_fd[%d]\n", epoll_fd);
+    struct epoll_event* events = calloc(MAXEVENTS/MAX_CONNECT, sizeof(struct epoll_event));
+
+    while(1) {
+        int i, cfd;
+        int n = epoll_wait(epoll_fd, events, MAXEVENTS/MAX_CONNECT, -1);
+        for(i = 0; i < n; i++) {
+            cfd = events[i].data.fd;
+            if((events[i].events & EPOLLERR) || (events[i].events & EPOLLHUP) || (!(events[i].events & EPOLLIN))) {
+            } else {
+                unsigned int count;
+                memset(socket_read_buf, NULL, MAX_BUF_SIZE*sizeof(char));
+                count = read(cfd, socket_read_buf, MAX_BUF_SIZE);
+                if(count == -1) {
+                    printf("read error\n");
+                    continue;
+                }
+                if(0 == count) {
+                    // read finish
+                    close(cfd);
+                    continue;
+                }
+                socket_read_buf[count] = "\0";
+                printf("Read : [%s]\n", socket_read_buf);
+            }
+        }
+    }
 }
 
 int handle_connection(int fd, Logger* connect_warning_logger) {
     int thread_index = fd%MAX_THREAD;
-    pthread_t thread;
     connect_warning_logger->warning(connect_warning_logger, "Accept Success, fd[%d]", fd);
-    if(-1 == thread_pool[thread_index]) {
+    if(NULL == thread_pool[thread_index]) {
+        MyThread* process_thread = malloc(sizeof(MyThread));
         // create thread
-        pthread_create(&thread, NULL, (void *)&do_handle_connection, (void*) fd);
+        int epoll_fd = epoll_create(1);
+        if(-1 == epoll_fd) {
+            connect_warning_logger->warning(connect_warning_logger, "Fail to create epoll", "");
+        }
+        struct epoll_event event;
+        event.data.fd = fd;
+        event.events = EPOLLIN | EPOLLET;
+        int ret = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &event); /* add socket to event queue */
+        if(-1 == ret) {
+            connect_warning_logger->warning(connect_warning_logger, "Fail to epoll_ctl", "");
+        }
+        pthread_t* pthread = (pthread_t*) malloc(sizeof(pthread_t));
+        pthread_create(pthread, NULL, (void *)&do_handle_connection, (void *) epoll_fd);
+        process_thread->thread = pthread;
+        process_thread->event = &event;
+        process_thread->epoll_fd = epoll_fd;
+        thread_pool[thread_index] = process_thread;
+        printf("create_thread success, thread_index[%d]\n", thread_index);
     } else {
+        printf("thread exist, just add the fd to the event queue, thread_index\n", thread_index);
+        int epoll_fd = thread_pool[thread_index] -> epoll_fd;
+        struct epoll_event event;
+        event.data.fd = fd;
+        event.events = EPOLLIN | EPOLLET;
+        int ret = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &event); /* add socket to event queue */
+        if(-1 == ret) {
+            connect_warning_logger->warning(connect_warning_logger, "Fail to epoll_ctl", "");
+            return -1;
+        }
     }
+    return 0;
 }
 
 int create_and_bind(const char* port) {
     struct addrinfo hints;
     struct addrinfo *result, *rp;
     result = rp = NULL;
+
     int ret, socket_fd;
 
     memset(&hints, 0, sizeof(struct addrinfo));
@@ -99,10 +156,9 @@ static int make_socket_non_blocking(int socket_fd) {
 }
 
 int create_server(const char* port, int* myerrno, char* errmsg) {
-
-    memset(thread_pool, 0, MAX_THREAD*sizeof(pthread_t));
     // init var
-    memset(connect_pool, 0, MAX_CONNECT * sizeof(Connect));
+    memset(thread_pool, NULL, MAX_THREAD * sizeof(MyThread*));
+    memset(connect_pool, NULL, MAX_CONNECT * sizeof(MyConnect*));
     connect_warning_logger = (Logger*)malloc(sizeof(Logger));
     char warning_file_name[MAX_LOG_FILENAME_LEN];
     sprintf(warning_file_name, "%s/%s", CONNECT_LOG_PATH, CONNECT_LOG_WARNING_FILENAME);
@@ -177,8 +233,8 @@ int create_server(const char* port, int* myerrno, char* errmsg) {
                         break;
                     }
 
-                    // Save it in Connect Pool, fd is the Key
-                    Connect* new_conn = malloc(sizeof(Connect));
+                    // Save it in MyConnect Pool, fd is the Key
+                    MyConnect* new_conn = malloc(sizeof(MyConnect));
                     new_conn->status = 1;
                     connect_pool[infd] = new_conn;
 
@@ -198,47 +254,15 @@ int create_server(const char* port, int* myerrno, char* errmsg) {
 
                     handle_connection(infd, connect_warning_logger);
 
-                    /*
-                    // add to epoll
-                    event.data.fd = infd;
-                    event.events = EPOLLIN | EPOLLET;
-                    ret = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, infd, &event);
-                    if(ret == -1) {
-                    connect_warning_logger->warning(connect_warning_logger, "epoll_ctl failed", "");
-                    break;
-                    }
-                    */
-
                     // Accept Finally Successfully
                     break;
                 }
             } else {
-                /*
-                   unsigned int count;
-                   count = read(cfd, socket_read_buf, MAX_BUF_SIZE);
-                   if(count == -1) {
-                   connect_warning_logger->warning(connect_warning_logger, "fail to read buf", "");
-                   connect_pool[cfd]->status = CONNECT_STATUS_ERROR;
-                   break;
-                   } else if(count == 0) {
-                // reach the end
-                connect_warning_logger->warning(connect_warning_logger, "Read Socket buf Success", "");
-                connect_pool[cfd]->status = CONNECT_STATUS_DONE;
-
-                // get resource back
-                free(connect_pool[cfd]);
-                connect_pool[cfd] = NULL;
-                break;
-                } else {
-                socket_read_buf[count] = '\0';
-                //do_accept();
-                printf(socket_read_buf);
-                }
-                */
             }
         }
     }
 
+    // clean resource
     free(events);
     free(connect_warning_logger);
 
@@ -246,5 +270,8 @@ int create_server(const char* port, int* myerrno, char* errmsg) {
     close(epoll_fd);
 
     close_logger(connect_warning_logger);
+
+    // free MyConnetc
+    // free MyThread
     return EXIT_SUCCESS;
 }
