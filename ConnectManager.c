@@ -271,7 +271,7 @@ int create_server(const char* port, int* myerrno, char* errmsg) {
 
     close_logger(connect_warning_logger);
 
-    // free MyConnetc
+    // free MyConnect
     // free MyThread
     return EXIT_SUCCESS;
 }
